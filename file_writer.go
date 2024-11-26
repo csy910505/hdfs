@@ -2,6 +2,7 @@ package hdfs
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -245,13 +246,48 @@ func (f *FileWriter) Close() error {
 	completeResp := &hdfs.CompleteResponseProto{}
 
 	err := f.client.namenode.Execute("complete", completeReq, completeResp)
+
 	if err != nil {
 		return &os.PathError{"create", f.name, err}
-	} else if completeResp.GetResult() == false {
-		return &os.PathError{"create", f.name, ErrReplicating}
 	}
 
+	localStart := time.Now().Unix()
+	fileComplete := completeResp.GetResult()
+	if !fileComplete {
+		retries := 5                        // 假设初始重试次数为3，可根据实际调整
+		sleeptime := 400 * time.Millisecond // 初始睡眠时间，可调整
+		maxSleepTime := 60000 * time.Millisecond
+
+		for retries > 0 {
+			retries--
+			time.Sleep(sleeptime)
+			sleeptime = calculateDelayForNextRetry(sleeptime, maxSleepTime)
+			if (time.Now().Unix() - localStart) > int64(5*time.Second) {
+				fmt.Printf("Could not complete %s retrying...\n", f.name)
+			}
+			err = f.client.namenode.Execute("complete", completeReq, completeResp)
+			if err != nil {
+				return &os.PathError{"create", f.name, err}
+			}
+			fileComplete = completeResp.GetResult()
+			if fileComplete {
+				break
+			}
+		}
+		if !fileComplete {
+			return &os.PathError{"create", f.name, ErrReplicating}
+		}
+	}
 	return nil
+}
+
+func calculateDelayForNextRetry(currentSleep time.Duration, maxSleep time.Duration) time.Duration {
+	// 这里简单示例计算下次重试延迟时间的逻辑，比如翻倍当前睡眠时间，但不超过最大睡眠时间
+	newSleep := currentSleep * 2
+	if newSleep > maxSleep {
+		return maxSleep
+	}
+	return newSleep
 }
 
 func (f *FileWriter) startNewBlock() error {
